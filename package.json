@@ -10,9 +10,6 @@
     "start:debug": "npm start -- -s true",
     "setup": "npm start -- -m setup"
   },
-  "pre-commit": [
-    "lint"
-  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/eshaham/israeli-ynab-updater.git"
