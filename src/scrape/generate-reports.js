@@ -118,9 +118,7 @@ export async function generateSingleReport(
     acc.push(...filteredTransactions);
     return acc;
   }, []);
-  const filePath = `${saveLocation}/${moment().format(DATE_TIME_FORMAT)}.csv`;
-  const fileFields = getReportFields(true);
-  const fileContent = objToCsv(fileTransactions, { fields: fileFields, withBOM: true });
-  await writeFile(filePath, fileContent);
+  const filePath = `${saveLocation}/${moment().format(DATE_TIME_FORMAT)}.json`;
+  await writeFile(filePath, JSON.stringify(fileTransactions, null, 2));
   console.log(colors.notify(`created file ${filePath}`));
 }
