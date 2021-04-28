@@ -1,34 +1,28 @@
-const fetch = require("node-fetch");
-const fs = require("fs");
-const childProcess = require("child_process");
-const process = require("process");
-const path = require("path");
-const moment = require("moment");
-const crypto = require("crypto");
-const _ = require("lodash");
-const { CONFIG_FOLDER } = require('./definitions');
+/* eslint-disable */
+const fetch = require('node-fetch');
+const fs = require('fs');
+const childProcess = require('child_process');
+const path = require('path');
+const moment = require('moment');
+const crypto = require('crypto');
+const _ = require('lodash');
+const { CONFIG_FOLDER, DOWNLOAD_FOLDER } = require('./definitions');
 const { writeJsonFile, readJsonFile } = require('./helpers/files');
 
+const REPORT_FOLDER = path.join(DOWNLOAD_FOLDER, 'tasks/Monthly');
+const HISTORY_FILE = path.join(CONFIG_FOLDER, 'history.json');
 
-// from: https://app.youneedabudget.com/settings/developer
-const YNAB_PERSONAL_TOKEN = allCredentials.ynab.devToken;
-// from: https://api.youneedabudget.com/v1/budgets
-const YNAB_BUDGET_ID = allCredentials.ynab.budgetId;
-
-const root = childProcess
-  .execSync("git rev-parse --show-toplevel")
-  .toString()
-  .trim();
-const dataDir = path.join(root, "output", "data");
+let vitalyYnabConfig;
 
 const importIdsCounts = {};
+
 function getImportId({ date, payee, amount }) {
-  let dateMoment = moment(date, "YYYY-MM-DD", true);
-  const daysPassed = dateMoment.diff(moment([2000, 0, 1]), "days");
+  const dateMoment = moment(date, 'YYYY-MM-DD', true);
+  const daysPassed = dateMoment.diff(moment([2000, 0, 1]), 'days');
   const payeeHash = crypto
-    .createHash("md5")
+    .createHash('md5')
     .update(payee)
-    .digest("base64")
+    .digest('base64')
     .toString();
 
   const importIdPrefix = daysPassed + payeeHash + amount;
@@ -46,255 +40,167 @@ function getImportId({ date, payee, amount }) {
   return importId;
 }
 
-function processAmount(amount) {
-  let processedAmount = undefined;
-  if (_.isNumber(amount)) {
-    processedAmount = amount;
-  } else if (_.isString(amount)) {
-    if (amount.includes("$")) {
-      throw new Error(
-        `dollar sign found - all values are expected to be in ILS`
-      );
-    }
+async function processTransactions(transactions) {
 
-    processedAmount = _filterFloat(amount.replace(/[^\d.-]/g, ""));
-    if (_.isNaN(this.amount)) {
-      throw new Error(`invalid amount value: ${amount}`);
-    }
-  } else {
-    throw new Error(`invalid amount value: ${amount}`);
-  }
-
-  return processedAmount;
-}
-
-function _filterFloat(value) {
-  if (/^(\-|\+)?([0-9]+(\.[0-9]+)?|Infinity)$/.test(value))
-    return Number(value);
-  return NaN;
-}
-
-async function processAccount(accountName) {
-  let accountPath = `${dataDir}/${accountName}.json`;
-
-  console.log(`Processing account ${accountName}... `);
-  const transactions = JSON.parse(fs.readFileSync(accountPath));
-
-  const accountId = allCredentials[accountName].ynabAccountId;
-
-  const byBillingDate = _.groupBy(transactions, tx => tx.billingDate);
-  const adjustedTransactions = Object.entries(byBillingDate)
-    .flatMap(([billingDate, transactions]) => {
-      let formattedTransactions = undefined;
-
-      let billingMoment = undefined;
-      let fakeTxMoment = undefined;
-
-      // Banks don't have billing dates
-      if (accountName !== "bank") {
-        billingMoment = moment(billingDate, "YYYY-MM-DD", true);
-        if (!billingMoment.isValid()) {
-          throw new Error(`Invalid billing moment for date:` + billingDate);
-        }
-
-        // Used for split transactions
-        fakeTxMoment = moment(billingMoment)
-          .subtract(1, "month")
-          .add(3, "days");
-      }
-
-      formattedTransactions = transactions.map(tx => {
-        let noteParts = [];
-
-        let txMoment = moment(tx.date, "YYYY-MM-DD", true);
-
-        if (billingMoment) {
-          noteParts.push(billingMoment.format("YYYY-MM-DD"));
-        }
-
-        if (fakeTxMoment && tx.memo.match(/תשלום\s+(\d+)/)) {
-          txMoment = fakeTxMoment;
-          noteParts.push(tx.memo);
-        }
-
-        let diffFromNow = moment().diff(txMoment);
-        if (diffFromNow > 0) {
-          return {
-            ...tx,
-            date: txMoment.format("YYYY-MM-DD"),
-            memo: noteParts.join(" - "),
-            amount: processAmount(tx.amount)
-          };
-        } else {
-          console.warn("Skipping future transactions: " + JSON.stringify(tx));
-          return undefined;
-        }
-      });
-
-      return formattedTransactions;
-    })
-    .filter(tx => !!tx);
-
-  const body = adjustedTransactions.map(transaction => {
+  const body = transactions.map((transaction) => {
     const amountNumber = Math.round(parseFloat(transaction.amount) * -1000);
+    const ynabAccount = vitalyYnabConfig.ynabAccounts.find(account => account.id === transaction.account);
+    if(!ynabAccount) {
+      throw new Error(`failed to find account for transaction: ` + JSON.stringify(transaction, null, 2));
+    }
+
+    let memo = "";
+    if(transaction.installment !== null || transaction.total !== null) {
+      memo = `Installment: ${transaction.installment} out of ${transaction.total}`
+    }
+
     return {
-      account_id: accountId,
-      date: transaction.date,
+      account_id: ynabAccount.uuid,
+      date: transaction.dateMoment,
       // Slice per max-length at: https://api.youneedabudget.com/v1#/Transactions
       payee_name: transaction.payee.slice(0, 50),
-      memo: transaction.memo.slice(0, 200),
+      memo: memo.slice(0, 200),
       amount: amountNumber,
-      import_id: getImportId({ ...transaction, amount: amountNumber })
+      import_id: getImportId(Object.assign({}, transaction, { amount: amountNumber })),
     };
   });
 
   const response = await fetch(
-    `https://api.youneedabudget.com/v1/budgets/${YNAB_BUDGET_ID}/transactions`,
+    `https://api.youneedabudget.com/v1/budgets/${vitalyYnabConfig.ynab.budgetId}/transactions`,
     {
-      credentials: "include",
+      credentials: 'include',
       headers: {
-        accept: "application/json",
-        authorization: `Bearer ${YNAB_PERSONAL_TOKEN}`,
-        "content-type": "application/json"
+        accept: 'application/json',
+        authorization: `Bearer ${vitalyYnabConfig.ynab.devToken}`,
+        'content-type': 'application/json',
       },
       body: JSON.stringify({
-        transactions: body
+        transactions: body,
       }),
-      method: "POST",
-      mode: "cors"
-    }
+      method: 'POST',
+      mode: 'cors',
+    },
   );
   const responseJson = await response.json();
   if (responseJson.data && responseJson.data.transactions) {
     const newTransactions = responseJson.data.transactions.length;
 
     const dateMoments = _.orderBy(
-      transactions.map(transaction =>
-        moment(transaction.date, "YYYY-MM-DD", true)
-      ),
-      moment => -moment.valueOf()
+      transactions.map((transaction) => moment(transaction.date, 'YYYY-MM-DD', true)),
+      (moment) => -moment.valueOf(),
     );
-
-    const metadata = {
-      lastExtractionSuccess: moment(fs.statSync(accountPath).mtime),
-      lastTransactionDate: dateMoments[0]
-    };
 
     return {
+      totalTransactions: transactions.length,
       newTransactions,
       lastDateMoment: dateMoments[0],
-      metadata: metadata
     };
-  } else {
-    throw new Error(
-      "Error response from YNAB: \n" + JSON.stringify(responseJson, null, 2)
-    );
   }
+  throw new Error(
+    `Error response from YNAB: \n${JSON.stringify(responseJson, null, 2)}`,
+  );
 }
 
-function processReportCypress(reportPath) {
-  const report = JSON.parse(fs.readFileSync(reportPath));
-  const date = report.stats.end;
-
-  return report.results
-    .flatMap(result => result.suites)
-    .flatMap(suit => suit.tests)
-    .map(test => ({ title: test.fullTitle, success: test.pass, date: date }));
-}
-
-function updateHistoryFromReports() {
-  const reportsDir = path.join(root, "output", "reports");
-  const reports = fs
-    .readdirSync(reportsDir)
-    .filter(file => file.endsWith(".json"));
-
-  const results = [];
-  for (const report of reports) {
-    const fullPath = path.join(reportsDir, report);
-    if (report.includes("cypress")) {
-      results.push(...processReportCypress(fullPath));
-    } else {
-      results.push(JSON.parse(fs.readFileSync(fullPath)));
+async function updateHistoryData(transactions) {
+  let currentHistory = [];
+  try {
+    currentHistory = await readJsonFile(HISTORY_FILE);
+    if(!currentHistory) {
+      currentHistory = [];
     }
-    fs.unlinkSync(fullPath);
+  } catch (e) {
+    console.warn("failed to get history")
   }
-  console.log(JSON.stringify(results, null, 2));
+  const groupedByAccount = _.groupBy(transactions, transaction => transaction.account)
+  const runDate = moment().format();
+  let newHistory = Object.keys(groupedByAccount).map(account => ({title: account, date: runDate, amount: groupedByAccount[account].length }));
 
-  const historyPath = path.join(root, "output", "history.json");
-  const historyData = [];
-  if (fs.existsSync(historyPath)) {
-    historyData.push(...JSON.parse(fs.readFileSync(historyPath)));
-  }
+  const allHistory = currentHistory.concat(newHistory)
+  await writeJsonFile(HISTORY_FILE, allHistory);
 
-  historyData.push(...results);
-  fs.writeFileSync(historyPath, JSON.stringify(historyData, null, 2));
+  return allHistory;
 }
 
-function getUnsuccessfulExtractions() {
-  let historyData = [];
-  const historyPath = path.join(root, "output", "history.json");
-  if (fs.existsSync(historyPath)) {
-    historyData = JSON.parse(fs.readFileSync(historyPath));
-  }
-  const groupedLog = _.groupBy(historyData, a => a.title);
-  const unsuccessfulMessages = Object.keys(groupedLog)
-    .map(accountName => {
-      const sortedEntries = groupedLog[accountName]
-        .map(item => ({ ...item, date: moment(item.date) }))
-        .filter(item => item.success === true)
-        .sort(item => -item.date.valueOf());
+function getUnsuccessfulExtractions(historyData) {
 
-      if (moment().diff(sortedEntries[0].date, "hours") > 72) {
+  const groupedLog = _.groupBy(historyData, (a) => a.title);
+  const unsuccessfulMessages = Object.keys(groupedLog)
+    .map((accountName) => {
+      const sortedEntries = groupedLog[accountName]
+        .map((item) => (Object.assign({}, item, { date: moment(item.date) })))
+        .sort((item) => -item.date.valueOf());
+
+      if (moment().diff(sortedEntries[0].date, 'hours') > 72) {
         return `Account "${accountName}" last ran successfully ${sortedEntries[0].date.fromNow()}`;
       }
+      return undefined;
     })
-    .filter(item => !!item);
+    .filter((item) => !!item);
 
   return unsuccessfulMessages;
 }
 
+async function readTransactions() {
+  const reports = fs
+    .readdirSync(REPORT_FOLDER)
+    .filter((file) => file.endsWith('.json'));
+
+  if(reports.length !== 1) {
+    throw new Error(`only 1 report is expected, but ${reports.length} found`);
+  }
+
+  return readJsonFile(path.join(REPORT_FOLDER, reports[0]));
+}
+
+async function loadYnabConfig() {
+  const configSkeleton = await readJsonFile(path.join(CONFIG_FOLDER, 'vitaly-ynab.json'));
+  const accountResponse = await (await fetch(
+    `https://api.youneedabudget.com/v1/budgets/${configSkeleton.ynab.budgetId}/accounts`,
+    {
+      credentials: 'include',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${configSkeleton.ynab.devToken}`,
+        'content-type': 'application/json',
+      },
+    },
+  )).json();
+
+  for (const ynabAccount of configSkeleton.ynabAccounts) {
+    const responseAccount = accountResponse.data.accounts.find(responseAccount => responseAccount.name === ynabAccount.name);
+    if(!responseAccount) {
+      throw new Error(`failed to find account: ` + ynabAccount.name);
+    }
+    ynabAccount.uuid = responseAccount.id;
+  }
+
+  return configSkeleton;
+}
+
 async function main() {
-  const results = [];
+  vitalyYnabConfig = await loadYnabConfig();
+  const transactions = await readTransactions();
+  let historyData = undefined;
 
   try {
-    updateHistoryFromReports();
+    historyData = await updateHistoryData(transactions);
   } catch (e) {
-    console.error("Failed to process reports: ", e);
+    console.error('Failed to process history: ', e);
   }
 
-  const accountNames = fs
-    .readdirSync(dataDir)
-    .filter(file => file.endsWith(".json"))
-    .map(file => path.basename(file, ".json"));
-  for (const accountName of accountNames) {
-    let result = await processAccount(accountName);
-    console.log(JSON.stringify(result, null, 2));
-    results.push({ accountName, ...result });
-  }
+  const result = await processTransactions(transactions);
+  const totalNew = result.newTransactions;
+  console.log(`Done. New transactions: ${totalNew}. Total transactions: ${transactions.length}`)
 
-  const totalNew = _.sumBy(results, result => result.newTransactions);
-  const late = results
-    .filter(result => moment().diff(result.lastDateMoment, "days") > 72)
-    .map(
-      result =>
-        `Account "${
-          result.accountName
-        }" last updated ${result.lastDateMoment.fromNow()}`
-    );
-
-  const unsuccessfulMessages = getUnsuccessfulExtractions();
+  const unsuccessfulMessages = getUnsuccessfulExtractions(historyData);
   if (totalNew > 0) {
     let message = `There are ${totalNew} new transactions.`;
 
     if (unsuccessfulMessages.length > 0) {
-      message += `\n\n` + unsuccessfulMessages.join("\n");
+      message += `\n\n${unsuccessfulMessages.join('\n')}`;
     }
 
-    // if (late.length > 0) {
-    //   message += `\n\n` + late.join("\n");
-    // }
-
-    console.log("");
+    console.log('');
     console.log(message);
 
     childProcess

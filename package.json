@@ -8,7 +8,8 @@
     "lint": "eslint src",
     "start": "babel-node src",
     "start:debug": "npm start -- -s true",
-    "setup": "npm start -- -m setup"
+    "setup": "npm start -- -m setup",
+    "monthly": "rm /Users/vitalyb/.ynab-updater/Downloads/tasks/Monthly/*.json; npm start -- -t Monthly && node_modules/.bin/babel-node src/ynab-upload.js"
   },
   "repository": {
     "type": "git",
@@ -38,7 +39,9 @@
     "israeli-bank-scrapers": "^1.0.1",
     "json2csv": "^5.0.5",
     "jsonfile": "^6.1.0",
+    "lodash": "^4.17.21",
     "moment": "^2.29.1",
+    "node-fetch": "^2.6.1",
     "yargs": "^16.1.1"
   }
 }

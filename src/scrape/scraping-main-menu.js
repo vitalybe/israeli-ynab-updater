@@ -29,14 +29,18 @@ export default async function (showBrowser, runTask) {
     scrapeType = scrapeTypePrompt;
   }
 
-  switch (scrapeType) {
-    case RUN_SCRAPER_ACTION:
-      await scrapeIndividual(showBrowser);
-      break;
-    case RUN_TASK_ACTION:
-      await scrapeTask(showBrowser, runTask);
-      break;
-    default:
-      break;
+  try {
+    switch (scrapeType) {
+      case RUN_SCRAPER_ACTION:
+        await scrapeIndividual(showBrowser);
+        break;
+      case RUN_TASK_ACTION:
+        await scrapeTask(showBrowser, runTask);
+        break;
+      default:
+        break;
+    }
+  } catch (e) {
+    process.exit(1);
   }
 }
