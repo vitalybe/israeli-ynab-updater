@@ -43,7 +43,7 @@ function getImportId({ date, payee, amount }) {
 async function processTransactions(transactions) {
 
   const body = transactions.map((transaction) => {
-    const amountNumber = Math.round(parseFloat(transaction.amount) * -1000);
+    const amountNumber = Math.round(parseFloat(transaction.amount) * 1000);
     const ynabAccount = vitalyYnabConfig.ynabAccounts.find(account => account.id === transaction.account);
     if(!ynabAccount) {
       throw new Error(`failed to find account for transaction: ` + JSON.stringify(transaction, null, 2));
